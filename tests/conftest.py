@@ -14,7 +14,6 @@ from dispatcher.registry import DispatcherMethodRegistry
 from dispatcher.config import DispatcherSettings
 from dispatcher.factories import from_settings, get_control_from_settings
 
-
 # List of channels to listen on
 CHANNELS = ['test_channel', 'test_channel2', 'test_channel3']
 
