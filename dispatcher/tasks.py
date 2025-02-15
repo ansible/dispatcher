@@ -73,7 +73,7 @@ async def alive(dispatcher, **data):
 
 
 @control_task
-def workers(dispatcher, **data):
+async def workers(dispatcher, **data):
     ret = []
     for worker in dispatcher.pool.workers.values():
         ret.append(worker.get_data())
