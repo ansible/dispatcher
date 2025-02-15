@@ -12,6 +12,7 @@ from dispatcher.main import DispatcherMain
 from dispatcher.control import Control
 
 from dispatcher.brokers.pg_notify import apublish_message, aget_connection, get_connection
+from dispatcher.process import ProcessManager, ForkServerManager
 
 
 # List of channels to listen on
@@ -28,10 +29,15 @@ def pg_dispatcher() -> DispatcherMain:
     return DispatcherMain(BASIC_CONFIG)
 
 
-@pytest_asyncio.fixture(loop_scope="function", scope="function")
+@pytest_asyncio.fixture(
+    loop_scope="function",
+    scope="function",
+    params=[ProcessManager, ForkServerManager],
+    ids=["fork", "forkserver"],
+)
 async def apg_dispatcher(request) -> AsyncIterator[DispatcherMain]:
     try:
-        dispatcher = DispatcherMain(BASIC_CONFIG)
+        dispatcher = DispatcherMain(BASIC_CONFIG, manager_cls=request.param)
 
         await dispatcher.connect_signals()
         await dispatcher.start_working()

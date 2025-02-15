@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Optional, Union
 
 from dispatcher.pool import WorkerPool
+from dispatcher.process import ForkServerManager
 from dispatcher.producers.base import BaseProducer
 from dispatcher.producers.brokered import BrokeredProducer
 from dispatcher.producers.scheduled import ScheduledProducer
@@ -79,7 +80,7 @@ class DispatcherEvents:
 
 
 class DispatcherMain:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, manager_cls: type = ForkServerManager):
         self.delayed_messages: list[SimpleNamespace] = []
         self.received_count = 0
         self.control_count = 0
@@ -88,7 +89,7 @@ class DispatcherMain:
         # Lock for file descriptor mgmnt - hold lock when forking or connecting, to avoid DNS hangs
         # psycopg is well-behaved IFF you do not connect while forking, compare to AWX __clean_on_fork__
         self.fd_lock = asyncio.Lock()
-        self.pool = WorkerPool(config.get('pool', {}).get('max_workers', 3), self.fd_lock)
+        self.pool = WorkerPool(config.get('pool', {}).get('max_workers', 3), fd_lock=self.fd_lock, manager_cls=manager_cls)
 
         # Initialize all the producers, this should not start anything, just establishes objects
         self.producers: list[Union[ScheduledProducer, BrokeredProducer]] = []
