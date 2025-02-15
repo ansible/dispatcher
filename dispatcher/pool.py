@@ -16,6 +16,7 @@ class PoolWorker:
         self.process = process
         self.current_task: Optional[dict] = None
         self.started_at: Optional[int] = None
+        self.retired_at: Optional[int] = None
         self.is_active_cancel: bool = False
 
         # Tracking information for worker
@@ -59,12 +60,14 @@ class PoolWorker:
                 await asyncio.sleep(1)
                 self.process.kill()
             else:
-                logger.debug(f'Worker {self.worker_id} pid={self.process.pid} exited code={self.process.exitcode}')
-                self.status = 'initialized'
+                logger.debug(f'Worker {self.worker_id} pid={self.process.pid} exited code={self.process.exitcode()}')
+                self.status = 'retired'
+                self.retired_at = time.monotonic_ns()
                 return
 
         logger.critical(f'Worker {self.worker_id} pid={self.process.pid} failed to exit after SIGKILL')
         self.status = 'error'
+        self.retired_at = time.monotonic_ns()
         return
 
     def cancel(self) -> None:
@@ -94,8 +97,9 @@ class PoolEvents:
 
 
 class WorkerPool:
-    def __init__(self, num_workers: int, fd_lock: Optional[asyncio.Lock] = None):
-        self.num_workers = num_workers
+    def __init__(self, min_workers: int, max_workers: int, scaledown_wait: int = 60, fd_lock: Optional[asyncio.Lock] = None):
+        self.min_workers = min_workers
+        self.max_workers = max_workers
         self.workers: dict[int, PoolWorker] = {}
         self.next_worker_id = 0
         self.process_manager = ProcessManager()
@@ -113,6 +117,17 @@ class WorkerPool:
 
         self.events: PoolEvents = PoolEvents()
 
+        # Track the last time we used X number of workers, like
+        # {
+        #   0: None,
+        #   1: None,
+        #   2: <timestamp>
+        # }
+        # where 1 worker is currently in use, and a task using the 2nd worker
+        # finished at <timestamp>, which is compared against out scale down wait time
+        self.last_used_by_ct = {}
+        self.scaledown_wait = scaledown_wait
+
     @property
     def processed_count(self):
         return self.finished_count + self.canceled_count + self.discard_count
@@ -129,20 +144,62 @@ class WorkerPool:
         self.timeout_task = asyncio.create_task(self.manage_timeout(), name='timeout_task')
         self.timeout_task.add_done_callback(dispatcher.fatal_error_callback)
 
+    def get_running_count(self) -> int:
+        ct = 0
+        for worker in self.workers.values():
+            if worker.current_task:
+                ct += 1
+        return ct
+
+    def should_scale_down(self):
+        worker_ct = len([worker for worker in self.workers.values() if worker.status == 'ready'])
+        if self.last_used_by_ct.get(worker_ct):
+            delta = (time.monotonic_ns() - self.last_used_by_ct[worker_ct]) / 1.0e-9
+            # Criteria - last time we used this-many workers was greater than the setting
+            return bool(delta > self.scaledown_wait)
+        return False
+
     async def manage_workers(self) -> None:
         """Enforces worker policy like min and max workers, and later, auto scale-down"""
         while not self.shutting_down:
-            while len(self.workers) < self.num_workers:
-                await self.up()
+            worker_ct = len(self.workers)
+            if worker_ct < self.min_workers:
+                worker_ids = []
+                while len(self.workers) < self.min_workers:
+                    new_worker_id = await self.up()
+                    worker_ids.append(new_worker_id)
+                logger.debug(f'Starting subprocess for workers ids={worker_ids} to satisfy min_workers')
+            elif worker_ct < self.max_workers and self.get_unblocked_message():
+                new_worker_id = await self.up()
+                logger.debug(f'Started worker id={new_worker_id} (current ct {worker_ct}() to handle queue pressure')
+            elif worker_ct >= self.max_workers:
+                logger.warning(f'System at max_workers={self.max_workers}, capacity may be insufficient')
+            elif worker_ct > self.min_workers:
+                async with self.management_lock:
+                    if self.should_scale_down():
+                        for worker in self.workers.values():
+                            if worker.current_task is None:
+                                logger.debug(f'Scaling down worker id={worker.worker_id} (current ct {worker_ct}) due to demand')
+                                await worker.stop()
+                                break
 
-            # TODO: if all workers are busy, queue has unblocked work, below max_workers
-            # scale up 1 more worker in that case
-
+            remove_ids = []
             for worker in self.workers.values():
-                if worker.status == 'initialized':
-                    logger.debug(f'Starting subprocess for worker {worker.worker_id}')
-                    async with self.fd_lock:  # never fork while connecting
+                started = False
+                async with self.fd_lock:  # never fork while connecting
+                    if worker.status == 'initialized':
                         await worker.start()
+                if started:
+                    # Starting the worker may have freed capacity for queued work
+                    await self.drain_queue()
+                if worker.status in ['retired', 'error'] and worker.retired_at and (time.monotonic_ns() - worker.retired_at) / 1.0e9 > 30.0:
+                    remove_ids.append(worker.worker_id)
+            # Last ditch cleanup of workers that never sent a fairwell message
+            for worker_id in remove_ids:
+                async with self.fd_lock:  # never fork while connecting
+                    if worker_id in self.workers:
+                        logger.debug(f'Fully removing worker id={worker_id}')
+                        del self.workers[worker_id]
 
             await self.events.management_event.wait()
             self.events.management_event.clear()
@@ -185,11 +242,13 @@ class WorkerPool:
                 await self.events.timeout_event.wait()
             self.events.timeout_event.clear()
 
-    async def up(self) -> None:
-        process = self.process_manager.create_process((self.next_worker_id,))
-        worker = PoolWorker(self.next_worker_id, process)
-        self.workers[self.next_worker_id] = worker
+    async def up(self) -> int:
+        new_worker_id = self.next_worker_id
+        process = self.process_manager.create_process((new_worker_id,))
+        worker = PoolWorker(new_worker_id, process)
+        self.workers[new_worker_id] = worker
         self.next_worker_id += 1
+        return new_worker_id
 
     async def stop_workers(self) -> None:
         stop_tasks = [worker.stop() for worker in self.workers.values()]
@@ -304,6 +363,12 @@ class WorkerPool:
                 return message
         return None
 
+    async def post_task_start(self, message):
+        if 'timeout' in message:
+            self.events.timeout_event.set()  # kick timeout task to set wakeup
+        running_ct = self.get_running_count()
+        self.last_used_by_ct[running_ct] = None  # block scale down of this amount
+
     async def dispatch_task(self, message: dict) -> None:
         async with self.management_lock:
             uuid = message.get("uuid", "<unknown>")
@@ -325,8 +390,7 @@ class WorkerPool:
             if worker := self.get_free_worker():
                 logger.debug(f"Dispatching task (uuid={uuid}) to worker (id={worker.worker_id})")
                 await worker.start_task(message)
-                if 'timeout' in message:
-                    self.events.timeout_event.set()  # kick timeout task to set wakeup
+                await self.post_task_start(message)
             else:
                 logger.warning(f'Queueing task (uuid={uuid}), ran out of workers, queued_ct={len(self.queued_messages)}')
                 self.queued_messages.append(message)
@@ -358,6 +422,9 @@ class WorkerPool:
                 msg += f", result: {result}"
         logger.debug(msg)
 
+        running_ct = self.get_running_count()
+        self.last_used_by_ct[running_ct] = time.monotonic_ns()  # scale down may be allowed, clock starting now
+
         # Mark the worker as no longer busy
         async with self.management_lock:
             if worker.is_active_cancel and result == '<cancel>':
@@ -373,6 +440,10 @@ class WorkerPool:
 
         if 'timeout' in message:
             self.events.timeout_event.set()
+
+        if not self.get_unblocked_message():
+            # if nothing is in the queue, it may be clear to scale down
+            self.events.management_event.set()
 
     async def read_results_forever(self) -> None:
         """Perpetual task that continuously waits for task completions."""
@@ -413,7 +484,7 @@ class WorkerPool:
                     async with self.management_lock:
                         del self.workers[worker.worker_id]
                         self.events.management_event.set()
-                    logger.debug(f"Worker {worker_id} finished exiting. It will be restarted.")
+                    logger.debug(f"Worker {worker_id} finished exiting.")
 
             elif event == 'done':
                 await self.process_finished(worker, message)
