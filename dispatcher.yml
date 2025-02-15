@@ -1,7 +1,9 @@
 # Demo config
 ---
 pool:
-  max_workers: 3
+  min_workers: 2  # subprocesses
+  max_workers: 12
+  scaledown_wait: 15  # seconds
 producers:
   brokers:
     # List of channels to listen on

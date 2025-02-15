@@ -88,7 +88,7 @@ class DispatcherMain:
         # Lock for file descriptor mgmnt - hold lock when forking or connecting, to avoid DNS hangs
         # psycopg is well-behaved IFF you do not connect while forking, compare to AWX __clean_on_fork__
         self.fd_lock = asyncio.Lock()
-        self.pool = WorkerPool(config.get('pool', {}).get('max_workers', 3), self.fd_lock)
+        self.pool = WorkerPool(fd_lock=self.fd_lock, **config.get('pool', {}))
 
         # Initialize all the producers, this should not start anything, just establishes objects
         self.producers: list[Union[ScheduledProducer, BrokeredProducer]] = []
