@@ -6,6 +6,7 @@ import uuid
 from types import SimpleNamespace
 
 from dispatcher.producers.brokered import BrokeredProducer
+from dispatcher.utils import MODULE_METHOD_DELIMITER
 
 logger = logging.getLogger('awx.main.dispatch.control')
 
@@ -96,16 +97,21 @@ class Control(object):
             conn_kwargs = {'config': self.config}
         return BrokeredProducer(broker='pg_notify', channels=[reply_queue], **conn_kwargs)
 
+    def sanitize_command(self, command: str) -> str:
+        if MODULE_METHOD_DELIMITER not in command:
+            return f'dispatcher.tasks.{command}'
+        return command
+
     async def acontrol_with_reply(self, command, expected_replies=1, timeout=1, data=None):
         reply_queue = Control.generate_reply_queue_name()
-        send_data = {'control': command, 'reply_to': reply_queue}
+        send_data = {'control': self.sanitize_command(command), 'reply_to': reply_queue}
         if data:
             send_data['control_data'] = data
 
         return await self.acontrol_with_reply_internal(self.make_producer(reply_queue), send_data, expected_replies, timeout)
 
     async def acontrol(self, command, data=None):
-        send_data = {'control': command}
+        send_data = {'control': self.sanitize_command(command)}
         if data:
             send_data['control_data'] = data
 
@@ -121,7 +127,7 @@ class Control(object):
         if (not self.config) and (not self.async_connection):
             raise RuntimeError('Must use a new psycopg connection to do control-and-reply')
 
-        send_data = {'control': command, 'reply_to': reply_queue}
+        send_data = {'control': self.sanitize_command(command), 'reply_to': reply_queue}
         if data:
             send_data['control_data'] = data
 
@@ -141,7 +147,7 @@ class Control(object):
     def control(self, command, data=None):
         from dispatcher.brokers.pg_notify import publish_message
 
-        send_data = {'control': command}
+        send_data = {'control': self.sanitize_command(command)}
         if data:
             send_data['control_data'] = data
 
