@@ -17,6 +17,7 @@ sys.path.append(tools_dir)
 
 from test_methods import sleep_function, sleep_discard, task_has_timeout, hello_world_binder
 
+
 # Database connection details
 CONNECTION_STRING = "dbname=dispatch_db user=dispatch password=dispatching host=localhost port=55777"
 
@@ -34,6 +35,7 @@ def main():
         # Send the notification
         publish_message(channel, message, config={'conninfo': CONNECTION_STRING})
         # await send_notification(channel, message)
+
     # send more than number of workers quickly
     print('')
     print('writing 15 messages fast')

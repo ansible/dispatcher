@@ -13,7 +13,6 @@ from dispatcher.control import Control
 
 from dispatcher.brokers.pg_notify import apublish_message, aget_connection, get_connection
 
-
 # List of channels to listen on
 CHANNELS = ['test_channel', 'test_channel2', 'test_channel3']
 
