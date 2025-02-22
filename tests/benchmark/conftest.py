@@ -111,20 +111,13 @@ class PoolServer:
                         raise
 
 
-# List of channels to listen on
-CHANNELS = ['test_channel', 'test_channel2', 'test_channel2']
-
-# Database connection details
-CONNECTION_STRING = "dbname=dispatch_db user=dispatch password=dispatching host=localhost port=55777"
-
-
 class FullServer(PoolServer):
     def run_benchmark_test(self, queue_in, queue_out, times):
         print('sending wakeup message to set new clear event')
         queue_in.put('wake')
         print('sending pg_notify messages')
         function = 'lambda: __import__("time").sleep(0.01)'
-        conn = create_connection(**{"conninfo": CONNECTION_STRING})
+        conn = create_connection(**self.config['brokers']['pg_notify']['config'])
         with conn.cursor() as cur:
             for i in range(times):
                 cur.execute(f"SELECT pg_notify('test_channel', '{function}');")
