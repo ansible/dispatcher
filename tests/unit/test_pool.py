@@ -2,15 +2,17 @@ import asyncio
 
 import pytest
 
-from dispatcher.pool import WorkerPool
-from dispatcher.main import DispatcherMain
+from dispatcher.factories import from_settings
+from dispatcher.config import temporary_settings
 
 
 @pytest.mark.asyncio
 async def test_no_op_task():
-    pool = WorkerPool(1)
-    await pool.start_working(DispatcherMain({}))
-    cleared_task = asyncio.create_task(pool.events.work_cleared.wait())
-    await pool.dispatch_task({'task': 'lambda: None'})
-    await cleared_task
-    await pool.shutdown()
+    with temporary_settings({'version': 2}):
+        dispatcher = from_settings()
+        pool = dispatcher.pool
+        await pool.start_working(dispatcher)
+        cleared_task = asyncio.create_task(pool.events.work_cleared.wait())
+        await pool.dispatch_task({'task': 'lambda: None'})
+        await cleared_task
+        await pool.shutdown()
