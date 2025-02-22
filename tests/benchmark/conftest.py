@@ -5,8 +5,9 @@ import time
 
 import pytest
 
-from dispatcher.brokers.pg_notify import get_connection
-from dispatcher.main import DispatcherMain
+from dispatcher.brokers.pg_notify import create_connection
+from dispatcher.config import DispatcherSettings
+from dispatcher.factories import from_settings
 
 
 class PoolServer:
@@ -16,6 +17,9 @@ class PoolServer:
     That method has to be ran inside a context manager,
     which will run (and stop) the relevant dispatcher code in a background process.
     """
+
+    def __init__(self, config):
+        self.config = config
 
     def run_benchmark_test(self, queue_in, queue_out, times):
         print(f'submitting message to pool server {times}')
@@ -27,8 +31,10 @@ class PoolServer:
             raise Exception('Test subprocess runner exception, look back in logs')
 
     @classmethod
-    async def run_pool(cls, queue_in, queue_out, workers, function='lambda: __import__("time").sleep(0.01)'):
-        dispatcher = DispatcherMain({"producers": {"brokers": {}}, "pool": {"max_workers": workers}})
+    async def run_pool(cls, config, queue_in, queue_out, workers, function='lambda: __import__("time").sleep(0.01)'):
+        this_config = config.copy()
+        this_config['service']['pool_kwargs']['max_workers'] = workers
+        dispatcher = from_settings(DispatcherSettings(this_config))
         pool = dispatcher.pool
         await pool.start_working(dispatcher)
         queue_out.put('ready')
@@ -58,10 +64,10 @@ class PoolServer:
         print('exited forever loop of pool server')
 
     @classmethod
-    def run_pool_loop(cls, queue_in, queue_out, workers, **kwargs):
+    def run_pool_loop(cls, config, queue_in, queue_out, workers, **kwargs):
         loop = asyncio.get_event_loop()
         try:
-            loop.run_until_complete(cls.run_pool(queue_in, queue_out, workers, **kwargs))
+            loop.run_until_complete(cls.run_pool(config, queue_in, queue_out, workers, **kwargs))
         except Exception:
             import traceback
 
@@ -79,7 +85,7 @@ class PoolServer:
     def start_server(self, workers, **kwargs):
         self.queue_in = multiprocessing.Queue()
         self.queue_out = multiprocessing.Queue()
-        process = multiprocessing.Process(target=self.run_pool_loop, args=(self.queue_in, self.queue_out, workers), kwargs=kwargs)
+        process = multiprocessing.Process(target=self.run_pool_loop, args=(self.config, self.queue_in, self.queue_out, workers), kwargs=kwargs)
         process.start()
         return process
 
@@ -118,7 +124,7 @@ class FullServer(PoolServer):
         queue_in.put('wake')
         print('sending pg_notify messages')
         function = 'lambda: __import__("time").sleep(0.01)'
-        conn = get_connection({"conninfo": CONNECTION_STRING})
+        conn = create_connection(**{"conninfo": CONNECTION_STRING})
         with conn.cursor() as cur:
             for i in range(times):
                 cur.execute(f"SELECT pg_notify('test_channel', '{function}');")
@@ -127,10 +133,10 @@ class FullServer(PoolServer):
         print(f'finished running round with {times} messages, got: {message_in}')
 
     @classmethod
-    async def run_pool(cls, queue_in, queue_out, workers):
-        dispatcher = DispatcherMain(
-            {"producers": {"brokers": {"pg_notify": {"conninfo": CONNECTION_STRING}, "channels": CHANNELS}}, "pool": {"max_workers": workers}}
-        )
+    async def run_pool(cls, config, queue_in, queue_out, workers):
+        this_config = config.copy()
+        this_config['service']['pool_kwargs']['max_workers'] = workers
+        dispatcher = from_settings(DispatcherSettings(this_config))
         await dispatcher.start_working()
         # Make sure the dispatcher is listening before starting the tests which will submit messages
         for producer in dispatcher.producers:
@@ -157,12 +163,12 @@ class FullServer(PoolServer):
 
 
 @pytest.fixture
-def with_pool_server():
-    server_thing = PoolServer()
+def with_pool_server(test_settings):
+    server_thing = PoolServer(test_settings.serialize())
     return server_thing.with_server
 
 
 @pytest.fixture
-def with_full_server():
-    server_thing = FullServer()
+def with_full_server(test_settings):
+    server_thing = FullServer(test_settings.serialize())
     return server_thing.with_server

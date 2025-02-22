@@ -2,13 +2,13 @@ import asyncio
 
 import pytest
 
-from dispatcher.control import Control
-from dispatcher.brokers.pg_notify import get_connection
+from dispatcher.brokers.pg_notify import create_connection
+from dispatcher.factories import get_control_from_settings
 
 
 @pytest.mark.benchmark(group="control")
-def test_alive_benchmark(benchmark, with_full_server, conn_config):
-    control = Control('test_channel', config=conn_config)
+def test_alive_benchmark(benchmark, with_full_server, test_settings):
+    control = get_control_from_settings(settings=test_settings)
 
     def alive_check():
         r = control.control_with_reply('alive')
@@ -20,11 +20,11 @@ def test_alive_benchmark(benchmark, with_full_server, conn_config):
 
 @pytest.mark.benchmark(group="control")
 @pytest.mark.parametrize('messages', [0, 3, 4, 5, 10, 100])
-def test_alive_benchmark_while_busy(benchmark, with_full_server, conn_config, messages):
-    control = Control('test_channel', config=conn_config)
+def test_alive_benchmark_while_busy(benchmark, with_full_server, test_settings, messages):
+    control = get_control_from_settings(settings=test_settings)
 
     def alive_check():
-        submit_conn = get_connection(conn_config)
+        submit_conn = create_connection(**test_settings.brokers['pg_notify']['config'])
         function = 'lambda: __import__("time").sleep(0.01)'
         with submit_conn.cursor() as cur:
             for i in range(messages):
