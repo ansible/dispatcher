@@ -43,17 +43,16 @@ class DispatcherMain:
 
         self.events: DispatcherEvents = DispatcherEvents()
 
-    def fatal_error_callback(self, *args) -> None:
+    def fatal_error_callback(self, task: asyncio.Task) -> None:
         """Method to connect to error callbacks of other tasks, will kick out of main loop"""
         if self.shutting_down:
             return
 
-        for task in args:
-            try:
-                task.result()
-            except Exception:
-                logger.exception(f'Exception from task {task.get_name()}, exit flag set')
-                task._dispatcher_tb_logged = True
+        try:
+            task.result()
+        except Exception:
+            logger.exception(f'Exception from task {task.get_name()}, exit flag set')
+            task._dispatcher_tb_logged = True  # type: ignore
 
         self.events.exit_event.set()
 
