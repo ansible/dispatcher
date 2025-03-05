@@ -2,12 +2,13 @@ import asyncio
 import json
 import logging
 import signal
-from types import SimpleNamespace
+import time
 from typing import Iterable, Optional
 from uuid import uuid4
 
 from ..producers import BaseProducer
 from . import control_tasks
+from .next_wakeup_runner import HasWakeup, NextWakeupRunner
 from .pool import WorkerPool
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,25 @@ class DispatcherEvents:
         self.exit_event: asyncio.Event = asyncio.Event()
 
 
+class DelayCapsule(HasWakeup):
+    """When a task has a delay, this tracks the delay"""
+
+    def __init__(self, delay: float, message: dict) -> None:
+        self.has_ran: bool = False
+        self.received_at = time.monotonic()
+        self.delay = delay
+        self.message = message
+
+    def next_wakeup(self) -> Optional[float]:
+        if self.has_ran is True:
+            return None
+        return self.received_at + self.delay
+
+
 class DispatcherMain:
     def __init__(self, producers: Iterable[BaseProducer], pool: WorkerPool, node_id: Optional[str] = None):
-        self.delayed_messages: list[SimpleNamespace] = []
+        self.delayed_messages: set[DelayCapsule] = set()
+        self.delayed_runner = NextWakeupRunner(self.delayed_messages, self.process_delayed_tasks)
         self.received_count = 0
         self.control_count = 0
         self.shutting_down = False
@@ -79,17 +96,12 @@ class DispatcherMain:
                 await producer.shutdown()
             except Exception:
                 logger.exception('Producer task had error')
-        if self.delayed_messages:
-            logger.debug('Shutting down delayed messages')
-            for capsule in self.delayed_messages:
-                capsule.task.cancel()
-                try:
-                    await capsule.task
-                except asyncio.CancelledError:
-                    logger.info(f'Canceled delayed task (uuid={capsule.uuid}) for shutdown')
-                except Exception:
-                    logger.exception(f'Error shutting down delayed task (uuid={capsule.uuid})')
-            self.delayed_messages = []
+
+        # Handle delayed tasks and inform user
+        await self.delayed_runner.shutdown()
+        for capsule in self.delayed_messages:
+            logger.warning(f'Abandoning delayed task (due to shutdown) to run in {capsule.delay}, message={capsule.message}')
+        self.delayed_messages = set()
 
         logger.debug('Gracefully shutting down worker pool')
         try:
@@ -103,22 +115,23 @@ class DispatcherMain:
     async def connected_callback(self, producer: BaseProducer) -> None:
         return
 
-    async def sleep_then_process(self, capsule: SimpleNamespace) -> None:
-        logger.info(f'Delaying {capsule.delay} s before running task: {capsule.message}')
-        await asyncio.sleep(capsule.delay)
-        logger.debug(f'Wakeup for delayed task: {capsule.message}')
-        await self.process_message_internal(capsule.message)
-        if capsule in self.delayed_messages:
-            self.delayed_messages.remove(capsule)
-            logger.info(f'fully processed delayed task (uuid={capsule.uuid})')
+    async def process_delayed_tasks(self) -> None:
+        current_time = time.monotonic()
+        for capsule in self.delayed_messages:
+            wakeup = capsule.next_wakeup()
+            if (not capsule.has_ran) and wakeup and (wakeup < current_time):
+                capsule.has_ran = True
+                logger.debug(f'Wakeup for delayed task: {capsule.message}')
+                await self.process_message_internal(capsule.message)
+                self.delayed_messages.remove(capsule)
 
     def create_delayed_task(self, message: dict) -> None:
         "Called as alternative to sending to worker now, send to worker later"
         # capsule, as in, time capsule
-        capsule = SimpleNamespace(uuid=message['uuid'], delay=message['delay'], message=message, task=None)
-        new_task = asyncio.create_task(self.sleep_then_process(capsule))
-        capsule.task = new_task
-        self.delayed_messages.append(capsule)
+        capsule = DelayCapsule(message['delay'], message)
+        logger.info(f'Delaying {capsule.delay} s before running task: {capsule.message}')
+        self.delayed_messages.add(capsule)
+        self.delayed_runner.kick()
 
     async def process_message(
         self, payload: dict, producer: Optional[BaseProducer] = None, channel: Optional[str] = None
