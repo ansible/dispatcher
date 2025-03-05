@@ -36,6 +36,7 @@ class NextWakeupRunner:
     You want to run each on their period - this does that using one lazy asyncio task.
     This is a repeated pattern in the code base with task schedules, delays, and timeouts
     """
+
     def __init__(self, wakeup_objects: Iterable[HasWakeup], callback: Callable[[], Coroutine[Any, Any, None]], name: Optional[str] = None) -> None:
         self.wakeup_objects = wakeup_objects
         self.callback = callback
@@ -105,3 +106,7 @@ class NextWakeupRunner:
                 self.kick_event.set()
         else:
             self.mk_new_task()
+
+    async def shutdown(self):
+        self.shutting_down = True
+        self.kick()

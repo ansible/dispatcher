@@ -363,8 +363,7 @@ class WorkerPool:
     async def shutdown(self) -> None:
         self.shutting_down = True
         self.events.management_event.set()
-        self.timeout_runner.shutting_down = True
-        self.timeout_runner.kick()
+        await self.timeout_runner.shutdown()
         await self.stop_workers()
         self.process_manager.finished_queue.put('stop')
 
