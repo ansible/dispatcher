@@ -70,7 +70,7 @@ class NextWakeupRunner:
             delta = next_wakeup - now_time
             if delta >= 0.0:
                 try:
-                    asyncio.wait_for(self.kick_event, timeout=delta)
+                    await asyncio.wait_for(self.kick_event.wait(), timeout=delta)
                 except asyncio.TimeoutError:
                     pass  # intended mechanism to hit the next schedule
                 except asyncio.CancelledError:

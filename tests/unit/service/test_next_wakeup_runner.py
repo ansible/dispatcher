@@ -1,5 +1,6 @@
 import time
 from unittest import mock
+import asyncio
 
 import pytest
 
@@ -65,8 +66,16 @@ async def test_graceful_shutdown():
         callback()  # track for assertion
 
     runner = NextWakeupRunner(objects, mock_process_tasks)
-
     runner.kick()  # creates task, starts running
+
+    # Poll for the objects data to reflect that it has been processed
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+        if obj.last_run >= time.monotonic() - 1.0:
+            break
+    else:
+        raise RuntimeError('Object was never marked as ran as expected')
+
 
     runner.shutting_down = True
     runner.kick()
@@ -75,4 +84,4 @@ async def test_graceful_shutdown():
 
     callback.assert_called_once_with()
 
-    assert runner.background_task.done() is True
+    assert runner.asyncio_task.done() is True
