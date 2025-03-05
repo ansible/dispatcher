@@ -30,7 +30,13 @@ def ensure_fatal(task: asyncio.Task) -> None:
 
 
 class NextWakeupRunner:
-    def __init__(self, wakeup_objects: Iterable[HasWakeup], callback: Callable[[], Coroutine[Any, Any, None]], name: Optional[str] = None):
+    """Implements a general contract to wakeup for next timestamp of a set of objects
+
+    For example, you have a set of schedules, each with a given period.
+    You want to run each on their period - this does that using one lazy asyncio task.
+    This is a repeated pattern in the code base with task schedules, delays, and timeouts
+    """
+    def __init__(self, wakeup_objects: Iterable[HasWakeup], callback: Callable[[], Coroutine[Any, Any, None]], name: Optional[str] = None) -> None:
         self.wakeup_objects = wakeup_objects
         self.callback = callback
         self.asyncio_task: Optional[asyncio.Task] = None
@@ -54,7 +60,7 @@ class NextWakeupRunner:
                 next_wakeup = nr_item
         return next_wakeup
 
-    async def background_task(self):
+    async def background_task(self) -> None:
         while not self.shutting_down:
             next_wakeup = self.get_next_wakeup()
             if next_wakeup is None:
@@ -84,12 +90,12 @@ class NextWakeupRunner:
         self.asyncio_task = asyncio.create_task(self.background_task(), name=self.name)
         self.asyncio_task.add_done_callback(ensure_fatal)
 
-    def kick(self):
+    def kick(self) -> None:
         """Initiates the asyncio task to wake up at the next run time
 
         This needs to be called if objects in wakeup_objects are changed, for example
         """
-        if not self.get_next_wakeup():
+        if self.get_next_wakeup() is None:
             # Optimization here, if there is no next time, do not bother managing tasks
             return
         if self.asyncio_task:
